@@ -1,0 +1,565 @@
+---
+title: Inferenence when the Hidden Random Variable is Binomial
+author: "Wolfgang Rolke"
+header-includes: \usepackage{color}
+                 \usepackage{float}
+                 \usepackage[utf8]{inputenc}
+output:
+   pdf_document:
+     fig_caption: no
+     keep_tex: yes
+   html_document: default
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+source("../R/setup.rmd.R", local=TRUE)
+setup.rmd(local.env=environment())
+```
+`r hl()$basefontsize()`
+`r hl()$style()`
+
+## Data
+
+We have a sequence of observations $X_{ij}\sim Bin(n, p)$, $i=1,..,K$ and $j=1,..,M$. We want to do inference for p. Clearly $\sum_{i,j} X_{ij}\sim Bin(nMK, p)$. Let $Y_j = \sum_j X_{ij}$ be the weekly totals. We actually observe $U_j = M[Y_j/M]$. We will study inference based on $T_K=\sum_{j=1}^K U_k$. It seems reasonable that this is a sufficient statistic, although an actual proof of this seems difficult.
+
+**Numerical Example** we have 10 weeks of daily counts, rounded to weekly averages:
+
+```{r}
+n=5000;K=10;M=7;p=0.01
+x=as.data.frame(matrix(rbinom(M*K, n, p), K, M))
+x$WeekTotal=apply(x,1,sum)
+x$U=M*floor(x$WeekTotal/M+0.5)
+x=rbind(x, apply(x, 2, sum))
+dimnames(x)=list(c(paste("Week", 1:K), "Total"), 
+                 c(paste("Day", 1:M),  "Week Total Y", "U" ))
+kable.nice(x)
+```
+
+
+## Test when Ignoring the Binning
+
+Say we want to test
+
+$$H_0:p=p_0\text{ vs. }H_a:p\ne p_0$$
+
+The basic Binomial test uses the test statistic 
+
+$$T=\frac{x-np_0}{\sqrt{np_0(1-p_0)}}$$
+
+and rejects the null at the $\alpha$ level if $|T|>z_{\alpha/2}$.
+
+Let's do a calculation of the true type I error. Note that this is an exact calculation using the normal approximation, not a simulation.
+
+```{r basic.binomial, cache=TRUE}
+true.alpha.basic.binomial <- 
+   function(M=31, n=500,nb=FALSE,  #with Mn*p_o large enough, normal approximation can be used throughout                                
+            p0=seq(0.1,0.9,length=250), 
+            alpha=c(0.01, 0.05, 0.1)) {
+  z=qnorm(1-alpha/2)
+  m=length(p0)
+  k=length(alpha)
+  out=matrix(0, m, k)
+  for(i in 1:m) {
+    crit=z*sqrt(M*n*p0[i]*(1-p0[i]))
+    for(j in 1:k) {
+      tmp=M*n*p0[i]+c(-1, 1)*crit[j] 
+      tmp1=M*c(round(tmp[1]/M)+0.5,round(tmp[2]/M)-0.5)
+      if(nb=="TRUE"){
+        out[i, j]=1-sum(dbinom(ceiling(tmp[1]):floor(tmp[2]), M*n, p0[i]))
+        tit<-"Basic Binomial test"
+      }else{
+        out[i, j]=1-sum(dbinom(ceiling(tmp1[1]):floor(tmp1[2]), M*n, p0[i]))
+        tit<-"Binning Effect on Basic Binomial test"
+      }
+    }
+      
+  }
+  df=data.frame(x=rep(p0, k),
+             y=c(out), 
+             alpha=factor(rep(alpha,each=m)))
+  ggplot(data=df, aes(x, y, color=alpha)) +
+  geom_line(size=1) +theme(legend.text=element_text(size=16),text = element_text(size=20))+
+  geom_hline(yintercept = c(0.01, 0.05, 0.1),size=1)+
+  labs(title=tit, x=bquote(phi[0]), y=bquote('True '*alpha))+
+  scale_color_discrete(name=bquote("Nominal "*alpha))
+   }
+p1<-true.alpha.basic.binomial(nb=TRUE)
+p2<-true.alpha.basic.binomial()
+library(gridExtra)
+grid.arrange(p1, p2, ncol=2)
+```
+
+and so we see that the true type I error can be much larger than the nominal one.
+
+## Basic Routines for $U$ and $T_K=\sum_{j=1}^K U_j$ 
+
+We have
+
+$$
+\begin{aligned}
+&P(U=x)    =\sum_{j=0}^n P(Y=j)I\left(M[j/M]=x\right) \\
+&P(T_k=x)    = P(T_{k-1}+Y=x) =\\
+&\sum_i P(T_{k-1}+Y=x|Y=i)P(Y=i) \\
+&\sum_i P(T_{k-1}=x-i)P(Y=i)  
+\end{aligned}
+$$
+and so the density of a sum of U's can be found via a recursion. When studying the effects of rounding to a discrete random variable we must decide on the use of a tie-breaking rule. While the rounding half even rule (4.5 is 4, 5.5 is 6)is generally preferred, the rounding half up leads to more compact theoretical results. Moreover, it does not appear that using rounding half up rule instead of half even would change the conclusions of our work. Therefore, we will work with half round up (floor(x+0.5) in R. For half even I must use round(x)). Of course there are computational limitations for this, especially in R. I have therefore written a Rcpp routine for this:
+
+-  R routine
+
+```{r}
+dbinnedbinomR=function(x, M, n, K, p) {
+  prob=0*x
+  xvals=0:(M*n)
+  uvals=M*floor(xvals/M+0.5)  #round half up for round half even use M*round(xvals/M)
+  for(j in seq_along(x)) {
+     if(K==1) {
+        prob[j]=sum(dbinom(xvals[uvals==x[j]], M*n, p))
+    }
+    else {  
+      z=0
+      for(i in M*0:n) {
+        if(x[j]-i>=0) 
+          z=z+dbinnedbinom(x[j]-i, M, n, K-1, p)*dbinnedbinom(i, M, n, 1, p)
+      }  
+      prob[j]=z
+    }
+  }
+  prob
+}
+```
+
+- Rcpp routine
+
+```{r engine='Rcpp'}
+# include <Rcpp.h>
+using namespace Rcpp;
+// [[Rcpp::export]]
+NumericVector dbinnedbinom(IntegerVector x, int M, int n, int K, double p) {
+  R_xlen_t J=x.length();
+  int i,j,k;
+  NumericVector prob(J), tmp(3);
+  IntegerVector uvals(M*n+1), truex(J);
+  for (i=0; i<J; ++i) truex[i]=x[i];
+  for (i=0; i<(M*n+1); ++i) uvals[i]=M*floor(double(i)/M+0.5);
+  for (j=0; j<J; ++j) {
+    prob[j]=0;
+    if(K==1) {
+      i=truex[j];
+      prob[j]=R::dbinom(i, M*n, p, 0);
+      while ( (i>0) & (uvals[i-1]==truex[j]) ) {
+        i=i-1;
+        prob[j]+=R::dbinom(i, M*n, p, 0);
+      } 
+      i=truex[j];
+      while ( (i<M*n) & (uvals[i+1]==truex[j])) {
+        i=i+1;
+        prob[j]+=R::dbinom(i, M*n, p, 0);
+      }
+    }
+    else {  
+      tmp[2]=0;
+      k=round(n*p);
+      tmp[0]=dbinnedbinom(x=truex[j]-M*k, M, n=n, K-1, p)[0];
+      tmp[1]=dbinnedbinom(x=M*k, M, n, 1, p)[0];
+      tmp[2]+=tmp[1];
+      prob[j]+=tmp[0]*tmp[1];
+      i=0;
+      while ( (tmp[2]<0.9999) ) {
+          i+=1;
+          tmp[0]=dbinnedbinom(x=truex[j]-M*(k+i), M, n=n, K-1, p)[0];
+          tmp[1]=dbinnedbinom(x=M*(k+i), M, n, 1, p)[0];
+          tmp[2]+=tmp[1];
+          prob[j]+=tmp[0]*tmp[1];
+          tmp[0]=dbinnedbinom(x=truex[j]-M*(k-i), M, n=n, K-1, p)[0];
+          tmp[1]=dbinnedbinom(x=M*(k-i), M, n, 1, p)[0];
+          tmp[2]+=tmp[1];
+          prob[j]+=tmp[0]*tmp[1];
+      }   
+    }  
+  }
+  return prob;
+}
+```
+
+I also have a routine for the cdf in the case of K=1:
+
+```{r}
+pbinnedbinom=function(x, M, n, p) {
+    xvals=0:(M*n)
+    uvals=M*floor(xvals/M+0.5)
+    y=0*x
+    for(i in seq_along(x)) {
+      y[i]=pbinom(max(xvals[uvals==x[i]]), M*n, p)
+    }
+    y
+}
+```
+
+## Examples:
+
+```{r cache=TRUE}
+M=7;n=5000;K=1;p=0.01
+x=M*0:(K*n)_
+x=x[x>qbinom(0.00001, M*n*K, p)]
+x=x[x<qbinom(1-0.00001, M*n*K, p)]
+z=dbinnedbinom(x, M, n, K, p)
+names(z)=x
+round(z, 4)
+sum(z)
+M=7;n=5000;K=3;p=0.01
+x=M*0:(K*n)
+x=x[x>qbinom(0.00001, M*n*K, p)]
+x=x[x<qbinom(1-0.00001, M*n*K, p)]
+z=dbinnedbinom(x, M, n, K, p)
+names(z)=x
+round(z, 4)
+sum(z)
+```
+
+relative speed of the R and Rcpp implementations:
+
+```{r speed, cache=TRUE}
+library(microbenchmark)
+M=7;n=5000;K=3;p=0.01
+u=M*K*floor(n*p+0.5)
+microbenchmark(dbinnedbinomR(u, M, n, K, p),
+               dbinnedbinom(u, M, n, K, p), times=10)
+```
+
+so the Rcpp version is much faster. Moreover it allows for a larger K.
+
+## Maximum Likelihood
+
+Maximum likelihood estimation can be done:
+
+```{r mle}
+mle <- function(x, M, n) {
+     loglike=function(p) -sum(log(dbinnedbinom(x, M, n, 1, p)))
+     nlminb(mean(x)/M/n, loglike,lower=0,upper=1)$par
+}
+M=7;n=5000;K=10;p=0.01
+x=rbinom(K, M*n, p)
+u=M*floor(x/M+0.5)
+rbind(x, u)
+mle(u, M, n)
+```
+
+but we will use the method of moments estimator in what follows.
+
+## Test and Confidence Intervals for a small Number Observations
+
+$$H_0:p=p_0 \text{ vs. }H_a:p\ne p_0$$
+
+Test is based on direct calculations from density. The p value is simply the probability based on the density of the binned data above. The interval is found by inverting the test. The corresponding equations are solved using  a bisection algorithm.
+
+All of this is done in the following routine, which is written to mimic the R routine *binom.test*, which implements the method by Clopper and Pearson (1934). For the case M=1 (no binning) that method is (almost) identical with our binned method.
+
+```{r binned.binom.test}
+binned.binom.test=function(x, M, n, K, p=0.5, 
+            conf.level=0.95, acc=1e-4, p.value.only=FALSE) {
+   DNAME <- deparse1(substitute(x))
+   DNAME <- paste(DNAME, ", ", deparse1(substitute(M)),
+                 ", ", deparse1(substitute(n)),
+                 " and ", deparse1(substitute(K)))
+   phat=x/M/n/K
+   xvalues=M*0:(K*n)
+   find.p.value = function(p) {
+     if(x<=M*n*K*p) {
+        tmp=xvalues[xvalues<=x]
+        tmp=tmp[tmp>qbinom(1e-5, M*n*K, p)]
+        if(length(tmp)==0) return(0)
+        p.value = 2*sum(dbinnedbinom(tmp, M, n, K, p))
+     }     
+     else {
+        tmp=xvalues[xvalues>=x]
+        tmp=tmp[tmp<qbinom(1-1e-5, M*n*K, p)]
+        if(length(tmp)==0) return(0)
+        p.value = 2*sum(dbinnedbinom(tmp, M, n, K, p))
+     }     
+     if(p.value>1) p.value=1 
+     p.value
+   }  
+   p.value=find.p.value(p)
+   if(p.value.only) return(p.value)
+   low=0
+   high=phat
+   repeat {
+       mid=(low+high)/2  
+       if(find.p.value(mid)<1-conf.level) low=mid
+       else high=mid
+       if(high-low<acc) break
+   }
+   ci=mid
+   low=phat
+   high=1
+   repeat {
+       mid=(low+high)/2  
+       if(find.p.value(mid)>1-conf.level) low=mid
+       else high=mid
+       if(high-low<acc) break
+   }
+   CINT=round(c(ci,mid), 4)
+   attr(CINT, "conf.level") <- conf.level
+   ESTIMATE <- phat
+   names(x) <- "Number of Successes"
+   names(M) <- "Binning Factor"
+   names(n) <- "number of trials"
+   names(K) <- "Number of Repetitions"
+   names(ESTIMATE)  <- names(p) <- "probability of puccess"
+   structure(list(statistic = x, parameter = c(M, n, K), p.value = p.value, 
+        conf.int = CINT, estimate = ESTIMATE, 
+        data.name=DNAME, null.value = p, alternative = "two.sided",
+        method = "Exact Test for Binned Binomial"), class = "htest")  
+}
+```
+
+- One observation
+
+```{r}
+M=7;n=5000;K=1;p=0.02
+x=M*(2+round(n*p))
+c(x, M*n*K*p)
+binned.binom.test(x, M, n, K, p)
+```
+
+- For comparison the standard test:
+
+```{r}
+binom.test(x, M*n, p)
+```
+
+-  null hypothesis is false:
+
+```{r}
+x=M*(2+round(n*0.018))
+x
+binned.binom.test(x, M, n, K, p)
+```
+
+ - Five observations
+
+```{r cache=TRUE}
+K=3;
+x=rbinom(K, M*n, p)
+sx=M*floor(sum(x)/M+0.5)
+c(x, sx, M*n*K*p)
+binned.binom.test(sx, M, n, K, p)
+```
+
+
+
+## Verify that test has correct Type I error for K=1
+
+```{r true.alpha}
+true.alpha=function(M, n, p=seq(0.1,0.9,length=250), alpha=c(0.01, 0.05, 0.1)) {
+    x=M*0:n
+    out=matrix(0, length(p), length(alpha))
+    for(j in seq_along(p)) {
+      p.values=0*x
+      for(i in seq_along(x))
+        p.values[i]=binned.binom.test(x[i], M, n, 1, p[j],
+              p.value.only=TRUE)
+      for(k in seq_along(alpha)) {
+        x1=x[p.values>alpha[k]]
+        out[j, k]=sum(dbinnedbinom(x1, M, n, 1, p[j]))
+      }  
+    }
+    df=data.frame(p=rep(p, length(alpha)),
+                  y=1-c(out),
+                  alpha=factor(rep(alpha, each=length(p))))
+    ggplot(data=df, aes(p, y, color=alpha)) +
+      geom_line(size=1) +theme(legend.text=element_text(size=16),text = element_text(size=20))+
+      geom_hline(yintercept = c(0.01, 0.05, 0.1),size=1)+
+      labs(title="Binned Binomial Test", x=bquote(phi[0]), y=bquote('True '*alpha)) +
+      scale_color_discrete(name=bquote("Nominal "*alpha))
+}
+```
+
+```{r cache=TRUE}
+a=1
+p3<-true.alpha(31, 500)
+```
+
+
+
+## Find true Coverage for K=1
+
+```{r coverage}
+coverage <- function(M, n, npoints=100) {
+  conf.level=c(0.9, 0.95, 0.99)
+   x=M*0:n
+   lims=list(matrix(0, length(x), 2), 
+             matrix(0, length(x), 2), 
+             matrix(0, length(x), 2))
+   for(i in seq_along(x)) {
+     for(j in 1:3)
+       lims[[j]][i, ]=c(binned.binom.test(x[i], M, n, 1,
+                      conf.level=conf.level[j])$conf.int)
+   }
+   p=seq(0.1, 0.9, length=npoints)
+   out=matrix(0, npoints, 3)
+   for(i in 1:npoints) {
+     for(j in 1:3) {
+        x1=x[lims[[j]][, 1]<=p[i]&p[i]<=lims[[j]][, 2]]
+        out[i, j]=sum(dbinnedbinom(x1, M, n, 1, p[i]))
+     }
+   }
+   df=data.frame(p=rep(p, length(conf.level)),
+                  y=c(out),
+                  conflevel=factor(rep(conf.level, each=length(p))))
+   ggplot(data=df, aes(p, y, color=conflevel)) +
+      geom_line(size=1) +
+      geom_hline(yintercept = conf.level, size=1) +
+      labs(title=paste("M=",M,", n=",n), 
+           x="p", 
+           y="True Confidence Level") 
+}
+
+```
+
+```{r cache=TRUE}
+a=1
+coverage(31, 100)
+```
+
+### Bayesian Credible Intervals
+
+We find the posterior density, its mean and credible intervals numerically:
+
+```{r bayes}
+bayes <- function(x, M, n, prior, alpha=0.05) {
+   posterior=function(p) {
+     y=p 
+     for(i in seq_along(p))
+       y[i]=prod(dbinnedbinom(x, M, n, 1, p[i]))
+     y*prior(p)/mx
+   }
+   mx=1  
+   lms=qbinom(c(1e-06, 1-1e-06), M*n, x/M/n)/M/n
+   mx=integrate(posterior, lms[1], lms[2], subdivisions = 1000)$value
+   Ef=function(p) p*posterior(p)
+   post.mean=integrate(Ef, lms[1], lms[2], subdivisions = 1000)$value
+   low=lms[1]
+   high=post.mean
+   repeat {
+     mid=(low+high)/2
+     if(integrate(posterior, 0, mid)$value<alpha/2) low=mid
+     else high=mid
+     if(high-low<0.0001) break
+   }
+   left=mid
+   low=post.mean
+   high=lms[2]
+   repeat {
+     mid=(low+high)/2
+     if(integrate(posterior, mid, 1)$value>alpha/2) low=mid
+     else high=mid
+     if(high-low<0.0001) break
+   }
+   right=mid
+   curve(posterior, 0.9*left, 1.1*right)
+   abline(v=c(left, post.mean, right))
+   round(c(left, post.mean, right), 4)
+}
+```
+
+-  Uniform prior:
+
+```{r}
+prior = function(p) dbeta(p, 1, 1)
+bayes(714, 7, 5000, prior)
+```
+
+
+
+## Many Observations
+
+Here we use the central limit theorem for the test and the large sample theory of mle's for the interval:
+
+```{r K.binned.binom.test}
+binned.binom.test.K=function(x, M, n, K, p=0.5, conf.level=0.95) {
+   DNAME <- deparse1(substitute(x))
+   DNAME <- paste(DNAME, ", ", deparse1(substitute(M)),
+                 ", ", deparse1(substitute(n)),
+                 " and ", deparse1(substitute(K)))
+   mle = x/M/n/K
+   crit=qnorm(1-(1-conf.level)/2)
+   uvals = M*0:n
+   uvals=uvals[uvals>qbinom(1e-010, M*n, p)]
+   uvals=uvals[uvals<qbinom(1-1e-10, M*n, p)]
+   tmp=dbinnedbinom(uvals, M, n, 1, p)
+   EU = sum(uvals*tmp)
+   VarU = sum(uvals^2*tmp) - EU^2
+   Z = sqrt(K)*(M*n*mle-EU)/sqrt(VarU)
+   p.value = 2*(1-pnorm(abs(Z)))
+   CINT=mean(x)/M/n+c(-1,1)*crit*sqrt(VarU/K)/(M*n)
+   attr(CINT, "conf.level") <- conf.level
+   ESTIMATE <- mle
+   names(x) <- "Number of Successes"
+   names(M) <- "Binning Factor"
+   names(n) <- "Number of Trials\n"
+   names(K) <- "Sample Size"
+   names(ESTIMATE)  <- names(p) <- "probability of puccess"
+   structure(list(statistic=x, parameter = c(K, M, n), p.value = p.value, 
+        conf.int = CINT, estimate = ESTIMATE, 
+        data.name=DNAME, null.value = p, alternative="two-sided",
+        method = "CLT Test for Binned Binomial"), class = "htest")  
+}
+```
+
+
+
+```{r}
+M=7;n=5000;K=10;p=0.01
+x=rbinom(K, M*n, p)
+u=M*floor(x/M+0.5)
+binom.test(sum(x), M*n*K, p)
+binned.binom.test.K(sum(u), M, n, K,  p)
+binom.test(sum(x), M*n*K, p=0.11)
+binned.binom.test.K(sum(u), M, n, K, 0.11)
+```
+
+
+```{r cache=TRUE}
+M=7;n=5000;K=50;p=0.02;B=1e4
+uvals = M*0:n
+EU = sum(uvals*dbinnedbinom(uvals, M, n, 1, p))
+VarU = sum(uvals^2*dbinnedbinom(uvals, M, n, 1, p)) - EU^2
+out=matrix(0, B, 2)
+for(i in 1:B) {
+   x=rbinom(K, M*n, p)
+   u=M*floor(x/M+0.5)
+   Z = sqrt(K)*(mean(x)-EU)/sqrt(VarU)
+   out[i, ] = c(Z, 2*(1-pnorm(abs(Z))))
+}
+c(sum(out[,2]<0.01)/B, sum(out[,2]<0.05)/B, sum(out[,2]<0.1)/B)
+```
+
+
+```{r cache=TRUE}
+tt=1
+coverage <- function(M,n,K,p,B=1e3) {
+   counter=0
+   for(i in 1:B) {
+      x=rbinom(K, M*n, p)
+      u=M*floor(x/M+0.5)
+      tmp=c(binned.binom.test.K(u, M, n, p)$conf.int)
+      if(tmp[1]<=p&p<=tmp[2]) counter=counter+1
+   }
+   counter/B
+}
+coverage(7, 5000, 50, 0.02)
+```
+
+### Bayesian Solution
+
+The same routine as before works, but runs into numerical problems when K is to large:
+
+```{r}
+prior = function(p) dunif(p)
+bayes(u[1:5], 7, 5000, prior)
+bayes(u[1:10], 7, 5000, prior)
+```
+
+The first case works but the second doesn't. In that case one should use MCMC
