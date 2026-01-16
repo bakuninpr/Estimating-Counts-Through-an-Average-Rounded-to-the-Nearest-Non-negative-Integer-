@@ -64,21 +64,21 @@ mean.and.var.u <- function(n,theta){
     aj <- (-1)^j*(exp(0+(pi/n)*2i))^(j/2)
   }
   sum.complex <- sum(aj* exp(theta/omegaj)/(1-omegaj))
-  sum.complex.term2 <- sum(aj*exp(theta/omegaj)/(1-omegaj)*(2*exp(-theta)/(1-omegaj) - exp(-theta)))
+  sum.complex.term2 <- sum(aj*exp(theta/omegaj)/(1-omegaj)*(2/((1-omegaj)*exp(theta)) - 1/exp(theta)))#exp(-theta) causes numerical instability and must be avoided
   ## expected value of U for Poisson
-  mean.u <- theta+0.5*(2*r-1)+ exp(-theta)*sum.complex
+  mean.u <- theta+0.5*(2*r-1)+ sum.complex/*exp(theta)
   ## variance of u for Poisson
   
-  var.u <- theta+(n^2-1)/12- exp(-2*theta)*sum.complex^2-sum.complex.term2
+  var.u <- theta+(n^2-1)/12- 1/exp(2*theta)*sum.complex^2-sum.complex.term2
   
   
-  c("E(U)" = Re(mean.u),"Var(U)" = Re(var.u),"eComplex.Term.1"=Re(exp(-theta)*sum.complex),"Complex.Term.2"=Re(sum.complex.term2))
+  c("E(U)" = Re(mean.u),"Var(U)" = Re(var.u),"eComplex.Term.1"=Re(sum.complex/exp(theta)),"Complex.Term.2"=Re(sum.complex.term2))
 }
 
 #### RRS computation below matches paper when n=2
 mean.and.var.u(n=2,theta = 0.1)
-theta+1/2-exp(-2*theta)/2 #E(U) according to paper when n=2, theta=.1
-0.1+0.25-exp(-.1*4)/4#Var(U) according to paper when n=2, theta=.1
+theta+1/2-1/(exp(2*theta)*2) #E(U) according to paper when n=2, theta=.1
+0.1+0.25- 1/(exp(.1*4)*4)  #Var(U) according to paper when n=2, theta=.1
 
 
 ## for large n (RRS relative to theta) it seems that the variance is Re(Var) = 2theta 
@@ -97,3 +97,4 @@ mean.and.var.u(n = 20,theta=25.5) #RRS; Var is rather bigger than theta
 
 ##### What about when lambda (=theta/n) >> n
 mean.and.var.u(n = 5,theta=1000) #for lambda >> n  Lemma 2 is validated 
+
