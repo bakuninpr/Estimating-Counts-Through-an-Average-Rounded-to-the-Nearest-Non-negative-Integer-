@@ -66,7 +66,7 @@ mean.and.var.u <- function(n,theta){
   sum.complex <- sum(aj* exp(theta/omegaj)/(1-omegaj))
   sum.complex.term2 <- sum(aj*exp(theta/omegaj)/(1-omegaj)*(2/((1-omegaj)*exp(theta)) - 1/exp(theta)))#exp(-theta) causes numerical instability and must be avoided
   ## expected value of U for Poisson
-  mean.u <- theta+0.5*(2*r-1)+ sum.complex/*exp(theta)
+  mean.u <- theta+0.5*(2*r-1)+ sum.complex/exp(theta)
   ## variance of u for Poisson
   
   var.u <- theta+(n^2-1)/12- 1/exp(2*theta)*sum.complex^2-sum.complex.term2
@@ -97,4 +97,5 @@ mean.and.var.u(n = 20,theta=25.5) #RRS; Var is rather bigger than theta
 
 ##### What about when lambda (=theta/n) >> n
 mean.and.var.u(n = 5,theta=1000) #for lambda >> n  Lemma 2 is validated 
+
 
